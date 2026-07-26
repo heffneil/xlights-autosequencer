@@ -30,6 +30,14 @@ _BACKING_TYPES = frozenset({"intro", "instrumental", "interlude", "break", "outr
 _SINGER_SPLIT = re.compile(r"\s*(?:&|,|/|\band\b|\bwith\b)\s*", re.IGNORECASE)
 _HEADER = re.compile(r"^\[(?P<body>.+)\]\s*$")
 
+# Genius multi-vocalist markup: within a line, ``*italic*`` / ``**bold**`` words
+# route to the role given that style in the section header (e.g.
+# ``[Verse 1: Elton John & *Kiki Dee*]``). ``*(ad-lib)*`` and plain ``(ad-lib)``
+# are backing. Order matters: italic-paren, then paren, then bold, then italic.
+_STYLE_SPAN_RE = re.compile(
+    r"\*\((?P<ip>[^)]*)\)\*|\((?P<paren>[^)]*)\)|\*\*(?P<bold>[^*]+)\*\*|\*(?P<italic>[^*]+)\*"
+)
+
 
 @dataclass
 class LyricWord:
@@ -57,6 +65,50 @@ def _tokenize(text: str) -> list[str]:
     return [t for t in re.split(r"\s+", text.strip()) if t]
 
 
+def _parse_styled_role(token: str) -> tuple[str, str]:
+    """Return (clean_name, style) for one header role token.
+
+    ``**X**`` -> (X, "bold"), ``*X*`` -> (X, "italic"), else (X, "plain").
+    Wrapping parens are stripped either way (Genius sometimes parenthesises a
+    featured vocalist, e.g. ``(*Kiki Dee*)``)."""
+    t = token.strip().strip("()").strip()
+    style = "plain"
+    if len(t) >= 4 and t.startswith("**") and t.endswith("**"):
+        t, style = t[2:-2].strip(), "bold"
+    elif len(t) >= 2 and t.startswith("*") and t.endswith("*"):
+        t, style = t[1:-1].strip(), "italic"
+    return t, style
+
+
+def _resolve_styled_header(tokens: list[str], seen: list[str]) -> tuple[list[str], dict[str, frozenset]]:
+    """Resolve a header's role list to (names, style_map).
+
+    ``names`` is the ordered, de-duplicated singer list. ``style_map`` maps each
+    style ("plain"/"italic"/"bold") to the set of roles carrying it, so
+    line-level markup can route words per singer. The literal token ``Both``
+    (case-insensitive) expands to every singer seen so far (as plain roles)."""
+    names: list[str] = []
+    style_map: dict[str, list[str]] = {}
+
+    def _add(nm: str, style: str) -> None:
+        if nm not in names:
+            names.append(nm)
+        style_map.setdefault(style, [])
+        if nm not in style_map[style]:
+            style_map[style].append(nm)
+
+    for tok in tokens:
+        nm, style = _parse_styled_role(tok)
+        if not nm:
+            continue
+        if nm.lower() == "both":
+            for s in seen:
+                _add(s, "plain")
+            continue
+        _add(nm, style)
+    return names, {k: frozenset(v) for k, v in style_map.items()}
+
+
 def parse_annotated_lyrics(text: str) -> ParsedLyrics:
     """Parse Genius-style annotated lyrics into an ordered attributed word stream.
 
@@ -68,6 +120,8 @@ def parse_annotated_lyrics(text: str) -> ParsedLyrics:
     """
     parsed = ParsedLyrics()
     cur_singers: frozenset = frozenset()
+    cur_style: dict[str, frozenset] = {}  # style -> roles, for line-level markup
+    cur_has_style = False                 # header carries italic/bold roles
     cur_backing = True  # before any header, treat as backing (e.g. stray intro)
 
     for raw_line in text.splitlines():
@@ -79,8 +133,9 @@ def parse_annotated_lyrics(text: str) -> ParsedLyrics:
             body = m.group("body")
             if ":" in body:
                 stype, who = body.split(":", 1)
-                names = _split_singers(who)
+                names, cur_style = _resolve_styled_header(_split_singers(who), parsed.singers)
                 cur_singers = frozenset(names)
+                cur_has_style = any(s != "plain" for s in cur_style)
                 cur_backing = False
                 for n in names:
                     if n not in parsed.singers:
@@ -88,35 +143,51 @@ def parse_annotated_lyrics(text: str) -> ParsedLyrics:
             else:
                 stype = body.strip()
                 cur_singers = frozenset()
+                cur_style = {}
+                cur_has_style = False
                 cur_backing = stype.lower() in _BACKING_TYPES
             continue
 
-        # Lyric line: split into lead spans and parenthetical (backing) spans.
-        for chunk, is_paren in _split_parens(line):
+        # Lyric line: split into styled spans (plain/italic/bold) + parenthetical
+        # backing. When the header assigns styles to roles, route each word to
+        # the role matching its style; otherwise fall back to all section singers.
+        for chunk, style, is_paren in _split_styled(line):
             for tok in _tokenize(chunk):
                 if not _norm(tok):
                     continue
                 backing = cur_backing or is_paren
-                parsed.words.append(
-                    LyricWord(text=tok,
-                              singers=frozenset() if backing else cur_singers,
-                              backing=backing)
-                )
+                if backing:
+                    singers = frozenset()
+                elif cur_has_style and style in cur_style:
+                    singers = cur_style[style]
+                else:
+                    singers = cur_singers
+                parsed.words.append(LyricWord(text=tok, singers=singers, backing=backing))
     return parsed
 
 
-def _split_parens(line: str) -> list[tuple[str, bool]]:
-    """Split a line into (text, is_parenthetical) spans, dropping the brackets."""
-    out: list[tuple[str, bool]] = []
+def _split_styled(line: str) -> list[tuple[str, str, bool]]:
+    """Split a line into (text, style, is_paren) spans, dropping the markup.
+
+    ``style`` is "plain"/"italic"/"bold"; ``is_paren`` marks ``(...)`` and
+    ``*(...)*`` ad-libs (backing). Text outside any markup is plain, non-paren."""
+    out: list[tuple[str, str, bool]] = []
     pos = 0
-    for m in re.finditer(r"\(([^)]*)\)", line):
+    for m in _STYLE_SPAN_RE.finditer(line):
         if m.start() > pos:
-            out.append((line[pos:m.start()], False))
-        out.append((m.group(1), True))
+            out.append((line[pos:m.start()], "plain", False))
+        if m.group("ip") is not None:
+            out.append((m.group("ip"), "plain", True))     # *(ad-lib)* -> backing
+        elif m.group("paren") is not None:
+            out.append((m.group("paren"), "plain", True))   # (ad-lib) -> backing
+        elif m.group("bold") is not None:
+            out.append((m.group("bold"), "bold", False))
+        else:
+            out.append((m.group("italic"), "italic", False))
         pos = m.end()
     if pos < len(line):
-        out.append((line[pos:], False))
-    return out or [(line, False)]
+        out.append((line[pos:], "plain", False))
+    return out or [(line, "plain", False)]
 
 
 @dataclass

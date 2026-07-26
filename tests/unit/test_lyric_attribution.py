@@ -127,3 +127,62 @@ class TestGroupByNamedSinger:
     def test_no_backing_track_when_none(self):
         groups = group_marks_by_named_singer([self._m("A", ["Blake"])])
         assert [n for n, _ in groups] == ["Blake"]
+
+
+BOTH_SAMPLE = """\
+[Verse 1: Alpha]
+one two
+[Chorus: Alpha & Beta]
+three four
+[Verse 2: Alpha, Both, (Beta)]
+five six
+"""
+
+
+class TestBothAndParenHeaders:
+    def test_both_expands_and_parens_stripped(self):
+        p = parse_annotated_lyrics(BOTH_SAMPLE)
+        assert p.singers == ["Alpha", "Beta"]        # no "Both" / "(Beta)" junk names
+        five = next(w for w in p.words if w.text == "five")
+        assert five.singers == frozenset({"Alpha", "Beta"})   # Both -> Alpha & Beta
+
+
+STYLED_SAMPLE = """\
+[Verse 1: Elton John & *Kiki Dee*]
+Don't go *breaking my heart*
+[Chorus: Alpha & **Beta**]
+plain **boldword** tail
+[Verse 2: Solo (*I love you*)]
+words here
+"""
+
+
+class TestStyledMarkup:
+    def test_italic_words_route_to_italic_role(self):
+        p = parse_annotated_lyrics(STYLED_SAMPLE)
+        dont = next(w for w in p.words if w.text.lower().startswith("don"))
+        assert dont.singers == frozenset({"Elton John"})   # plain -> plain role
+        heart = next(w for w in p.words if w.text == "heart")
+        assert heart.singers == frozenset({"Kiki Dee"})    # italic -> italic role
+
+    def test_bold_words_route_to_bold_role(self):
+        p = parse_annotated_lyrics(STYLED_SAMPLE)
+        assert next(w for w in p.words if w.text == "boldword").singers == frozenset({"Beta"})
+        assert next(w for w in p.words if w.text == "plain").singers == frozenset({"Alpha"})
+
+    def test_singers_list_has_clean_names(self):
+        p = parse_annotated_lyrics(STYLED_SAMPLE)
+        assert "Kiki Dee" in p.singers and "*Kiki Dee*" not in p.singers
+        assert "Beta" in p.singers and "**Beta**" not in p.singers
+
+    def test_plain_header_ignores_stray_markup(self):
+        # No styled roles in header -> section-level (back-compat); stray *two* still {A,B}
+        p = parse_annotated_lyrics("[Chorus: A & B]\none *two* three\n")
+        assert all(w.singers == frozenset({"A", "B"}) for w in p.words)
+
+    def test_italic_paren_is_backing(self):
+        # *(...)* italic-paren ad-lib -> backing
+        p = parse_annotated_lyrics("[Verse: A]\nhello *(oh yeah)* world\n")
+        oh = next(w for w in p.words if w.text == "oh")
+        assert oh.backing is True and oh.singers == frozenset()
+        assert next(w for w in p.words if w.text == "hello").singers == frozenset({"A"})
