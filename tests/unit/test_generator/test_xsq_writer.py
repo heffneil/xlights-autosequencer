@@ -2797,3 +2797,78 @@ class TestSparkleFrequencyCap:
     def test_value_at_or_under_twenty_unchanged(self) -> None:
         result = _serialize_palette(["#0000FF"], music_sparkles=7)
         assert "C_SLIDER_SparkleFrequency=7" in result
+
+
+class TestNamedPerSingerLyricTracks:
+    """Words carrying a ``singers`` list drive one "Lyrics - <name>" 3-layer
+    track per singer, and supersede the binary lead/backup diarization split."""
+
+    WORDS = [
+        # shared chorus word — belongs to both singers
+        {"label": "NOEL", "start_ms": 1000, "end_ms": 1400, "singers": ["JC", "Justin"]},
+        {"label": "SHEPHERDS", "start_ms": 4000, "end_ms": 4400, "singers": ["JC"]},
+        {"label": "STAR", "start_ms": 9000, "end_ms": 9400, "singers": ["Justin"]},
+    ]
+    PHONEMES = [
+        {"label": "O", "start_ms": 1000, "end_ms": 1400, "singers": ["JC", "Justin"]},
+        {"label": "E", "start_ms": 4000, "end_ms": 4400, "singers": ["JC"]},
+        {"label": "AI", "start_ms": 9000, "end_ms": 9400, "singers": ["Justin"]},
+    ]
+
+    def _timing_names(self, out) -> set:
+        root = ET.parse(out).getroot()
+        return {e.get("name") for e in root.find("ElementEffects").findall("Element")
+                if e.get("type") == "timing"}
+
+    def test_one_track_per_named_singer(self, tmp_path: Path) -> None:
+        out = tmp_path / "t.xsq"
+        write_xsq(_make_plan(), out, words=self.WORDS, phonemes=self.PHONEMES)
+        names = self._timing_names(out)
+        assert "Lyrics - JC" in names
+        assert "Lyrics - Justin" in names
+
+    def test_attribution_supersedes_binary_backup_split(self, tmp_path: Path) -> None:
+        out = tmp_path / "t.xsq"
+        write_xsq(_make_plan(), out, words=self.WORDS, phonemes=self.PHONEMES,
+                  vocal_diarization=True)
+        assert "Lyrics - Backup" not in self._timing_names(out)
+
+    def test_each_singer_track_has_three_layers(self, tmp_path: Path) -> None:
+        out = tmp_path / "t.xsq"
+        write_xsq(_make_plan(), out, words=self.WORDS, phonemes=self.PHONEMES)
+        root = ET.parse(out).getroot()
+        el = [e for e in root.find("ElementEffects").findall("Element")
+              if e.get("name") == "Lyrics - JC"][0]
+        assert len(el.findall("EffectLayer")) == 3
+
+    def test_shared_word_appears_on_both_singer_tracks(self, tmp_path: Path) -> None:
+        out = tmp_path / "t.xsq"
+        write_xsq(_make_plan(), out, words=self.WORDS, phonemes=self.PHONEMES)
+        root = ET.parse(out).getroot()
+        labels = {}
+        for name in ("Lyrics - JC", "Lyrics - Justin"):
+            el = [e for e in root.find("ElementEffects").findall("Element")
+                  if e.get("name") == name][0]
+            word_layer = el.findall("EffectLayer")[1]
+            labels[name] = {f.get("label") for f in word_layer.findall("Effect")}
+        assert "NOEL" in labels["Lyrics - JC"]
+        assert "NOEL" in labels["Lyrics - Justin"]
+        # ...and solo words stay on their own singer's track only
+        assert "SHEPHERDS" in labels["Lyrics - JC"]
+        assert "SHEPHERDS" not in labels["Lyrics - Justin"]
+
+    def test_singer_tracks_are_registered_in_display_elements(self, tmp_path: Path) -> None:
+        out = tmp_path / "t.xsq"
+        write_xsq(_make_plan(), out, words=self.WORDS, phonemes=self.PHONEMES)
+        root = ET.parse(out).getroot()
+        display = {e.get("name") for e in root.find("DisplayElements").findall("Element")}
+        assert {"Lyrics - JC", "Lyrics - Justin"} <= display
+
+    def test_unattributed_words_keep_the_legacy_single_track(self, tmp_path: Path) -> None:
+        words = [{"label": "HELLO", "start_ms": 1000, "end_ms": 1400, "speaker": 0}]
+        phonemes = [{"label": "E", "start_ms": 1000, "end_ms": 1400}]
+        out = tmp_path / "t.xsq"
+        write_xsq(_make_plan(), out, words=words, phonemes=phonemes)
+        names = self._timing_names(out)
+        assert "Lyrics" in names
+        assert not any(n.startswith("Lyrics - ") for n in names)

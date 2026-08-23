@@ -206,6 +206,25 @@ def _unknown_word_fallback(word: str) -> list[str]:
     return result or ["etc"]
 
 
+_CMU_DICT: dict | None = None
+
+
+def get_cmu_dict() -> dict:
+    """Load (and cache) the cmudict pronunciation dictionary.
+
+    Module-level so callers that only need word->phoneme expansion — e.g. the
+    per-singer path, whose word timings come from the external aligner — do not
+    have to construct a PhonemeAnalyzer or import whisperx.
+    """
+    global _CMU_DICT
+    if _CMU_DICT is None:
+        import nltk
+        nltk.download("cmudict", quiet=True)
+        from nltk.corpus import cmudict as _cmudict
+        _CMU_DICT = _cmudict.dict()
+    return _CMU_DICT
+
+
 def word_to_papagayo(word: str, cmu_dict: dict) -> list[str]:
     """
     Convert a word to a list of Papagayo labels using cmudict.
@@ -293,10 +312,7 @@ class PhonemeAnalyzer:
 
     def _get_cmu_dict(self) -> dict:
         if self._cmu_dict is None:
-            import nltk
-            nltk.download("cmudict", quiet=True)
-            from nltk.corpus import cmudict as _cmudict
-            self._cmu_dict = _cmudict.dict()
+            self._cmu_dict = get_cmu_dict()
         return self._cmu_dict
 
     def analyze(
