@@ -31,6 +31,14 @@ services:
       # analysis silently skips every vamp/madmom algorithm. Inside this
       # image it's a symlink to the one system Python (see Dockerfile).
       - XLIGHT_VENV_VAMP=/home/node/.venv-vamp/bin/python
+      # Per-singer lyric alignment service (deploy/aligner). Runs in its own
+      # container because AutoLyrixAlign is GPLv3 — see its README. Point this
+      # at the host, not localhost: inside this container localhost is itself.
+      - ALIGNER_URL=${ALIGNER_URL:-http://host.docker.internal:3001}
+    extra_hosts:
+      # host.docker.internal is Docker Desktop only; declare it explicitly so
+      # the aligner is reachable on Linux hosts too.
+      - "host.docker.internal:host-gateway"
     volumes:
       - .:/workspace
       # Song library, cached analysis/stems, custom themes/variants — kept
