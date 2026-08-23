@@ -2,6 +2,7 @@ import React, { useEffect, useState, useRef, useCallback } from 'react';
 import styles from './Analyze.module.css';
 import { PasteLyricsDialog, type LyricsCheckResult } from '../components/PasteLyricsDialog/PasteLyricsDialog';
 import { XTimingUploadDialog, type XTimingUploadResult } from '../components/XTimingUploadDialog/XTimingUploadDialog';
+import { SingerPartsDialog, type SingerPartsResult } from '../components/SingerPartsDialog/SingerPartsDialog';
 
 interface Song {
   song_id: string;
@@ -254,6 +255,8 @@ export function Analyze({ song, forceOnMount = false, onAnalysisComplete, onComp
   const [showPasteLyrics, setShowPasteLyrics] = useState(false);
   const [showXTimingUpload, setShowXTimingUpload] = useState(false);
   const [xtimingResult, setXTimingResult] = useState<XTimingUploadResult | null>(null);
+  const [showSingerParts, setShowSingerParts] = useState(false);
+  const [singerPartsResult, setSingerPartsResult] = useState<SingerPartsResult | null>(null);
 
   // Load a previously-saved song bundle (Export screen's "Save Bundle" —
   // title/artist + theme assignments + every session extra) back onto this
@@ -768,6 +771,14 @@ export function Analyze({ song, forceOnMount = false, onAnalysisComplete, onComp
         </button>
         <button
           className={styles.reanalyzeBtn}
+          data-testid="singer-parts-btn"
+          onClick={() => setShowSingerParts(true)}
+          title="Name each singer and paste only their lines — builds one lyric track per singer, so each singing face mouths its own part"
+        >
+          Per-Singer Lyrics
+        </button>
+        <button
+          className={styles.reanalyzeBtn}
           data-testid="load-bundle-btn"
           onClick={() => bundleInputRef.current?.click()}
           disabled={loadingBundle}
@@ -865,6 +876,26 @@ export function Analyze({ song, forceOnMount = false, onAnalysisComplete, onComp
               setShowXTimingUpload(false);
             }}
             onCancel={() => setShowXTimingUpload(false)}
+          />
+        )}
+        {singerPartsResult?.found && (
+          <span className={styles.metadataSuccess} data-testid="singer-parts-status">
+            ✓ Per-singer lyrics aligned: {singerPartsResult.singers
+              .map((s) => `${s.name} (${s.word_count})`)
+              .join(', ')}
+            {singerPartsResult.shared_word_count > 0
+              && ` — ${singerPartsResult.shared_word_count} shared`}
+            {' '}— will be used on the next Analyze
+          </span>
+        )}
+        {showSingerParts && (
+          <SingerPartsDialog
+            songId={song.song_id}
+            onSaved={(result) => {
+              setSingerPartsResult(result);
+              setShowSingerParts(false);
+            }}
+            onCancel={() => setShowSingerParts(false)}
           />
         )}
       </div>

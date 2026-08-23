@@ -738,9 +738,20 @@ def _analyze_in_background(state: "_RunState", source_path: str, song_id: str,
         words_list: list[dict] = []
         phonemes_list: list[dict] = []
         lyrics_warnings: list[str] = []
+        # Per-singer parts (POST .../lyrics/singers) rank above everything:
+        # the user named each singer and pasted their lines, and the words are
+        # already aligned, so there is nothing left to guess.
+        from .singers import get_singer_override
+        singer_override = get_singer_override(song_id)
         with _xtiming_override_cache_lock:
             xtiming_override = _xtiming_override_cache.get(song_id)
-        if xtiming_override is not None:
+        if singer_override is not None:
+            words_list, phonemes_list, singer_parts = singer_override
+            state.push({"detector": "phonemes (per-singer align)", "library": "story",
+                        "status": "done", "confidence": 1.0,
+                        "marks": len(phonemes_list),
+                        "singers": [p["name"] for p in singer_parts]})
+        elif xtiming_override is not None:
             words_list, phonemes_list, xtiming_lines = xtiming_override
             # The uploaded file's own phrase layer is already-correct synced
             # lyric lines -- use it for the Timeline's LyricTrack too, same
