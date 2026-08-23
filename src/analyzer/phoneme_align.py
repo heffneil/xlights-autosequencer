@@ -224,11 +224,16 @@ def _run_alignment(
                     "phoneme alignment skipped: whisperx unavailable and no "
                     ".venv-vamp sidecar found"
                 )
-                return [], [], []
+                return [], [], [
+                    "Word/phoneme alignment unavailable: whisperx could not be "
+                    "loaded and no .venv-vamp sidecar was found. The lyric track "
+                    "will have phrases only — singing faces need the phoneme "
+                    "layer, so they will not be placed."
+                ]
             return _run_in_sidecar(sidecar, align_audio, lyrics_path)
         except Exception as exc:
             log.warning("phoneme alignment failed: %s", exc, exc_info=True)
-            return [], [], []
+            return [], [], [f"Word/phoneme alignment failed: {exc}"]
     finally:
         if tmp_file is not None:
             try:

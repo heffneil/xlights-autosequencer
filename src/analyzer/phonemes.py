@@ -317,12 +317,19 @@ class PhonemeAnalyzer:
         self.warnings = warnings
 
         try:
+            # Modern torch/torchaudio break pyannote.audio (which whisperx
+            # imports at package level). Shim before importing whisperx.
+            from src.analyzer import torch_compat
+
+            torch_compat.apply()
             import whisperx
-        except ImportError:
+        except (ImportError, AttributeError) as exc:
             raise RuntimeError(
-                "whisperx is required for phoneme analysis. "
-                "Install it with: pip install whisperx"
-            )
+                "whisperx is unavailable for phoneme analysis "
+                f"({type(exc).__name__}: {exc}). This is normally a "
+                "torch/torchaudio version mismatch — see "
+                "src/analyzer/torch_compat.py."
+            ) from exc
 
         cmu_dict = self._get_cmu_dict()
 
